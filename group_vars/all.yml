@@ -26,3 +26,4 @@ repo_root: "{{ playbook_dir | dirname | dirname }}"
 # Where fetched backups/reports land on the control node
 local_backup_dir: "{{ repo_root }}/backups"
 local_report_dir: "{{ repo_root }}/reports"
+local_log_dir: "{{ repo_root }}/logs"

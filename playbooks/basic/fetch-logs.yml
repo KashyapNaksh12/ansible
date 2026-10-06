@@ -1,0 +1,52 @@
+---
+# Pull log files (and optionally the systemd journal) from each host into logs/ on the control node.
+# Files land in logs/<host>/<full remote path>.
+# Usage:
+#   ansible-playbook playbooks/basic/fetch-logs.yml
+#   ansible-playbook playbooks/basic/fetch-logs.yml -e '{"log_files": ["/var/log/nginx/error.log"]}'
+#   ansible-playbook playbooks/basic/fetch-logs.yml -e journal_since="2 hours ago" -l remote1
+- name: Fetch logs
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    log_files: [/var/log/messages, /var/log/secure, /var/log/cloud-init-output.log]
+    journal_since: "24 hours ago"   # Amazon Linux 2023 logs mostly to the journal; "" skips it
+    journal_tmp: /tmp/ansible-journal.log
+  tasks:
+    - name: Check which log files exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ log_files }}"
+      register: log_stats
+
+    - name: Fetch log files
+      ansible.builtin.fetch:
+        src: "{{ item.item }}"
+        dest: "{{ local_log_dir }}/"
+        flat: false
+      loop: "{{ log_stats.results | selectattr('stat.exists') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Export journal
+      ansible.builtin.shell: journalctl --since "{{ journal_since }}" --no-pager -o short-iso > {{ journal_tmp }}
+      changed_when: false
+      when: journal_since | length > 0
+
+    - name: Fetch journal export
+      ansible.builtin.fetch:
+        src: "{{ journal_tmp }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}/journal.log"
+        flat: true
+      when: journal_since | length > 0
+
+    - name: Remove journal export from host
+      ansible.builtin.file:
+        path: "{{ journal_tmp }}"
+        state: absent
+      when: journal_since | length > 0
+
+    - name: Show where logs went
+      ansible.builtin.debug:
+        msg: "Logs saved under {{ local_log_dir }}/{{ inventory_hostname }}/"

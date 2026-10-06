@@ -1,0 +1,51 @@
+---
+# Rotate application logs with logrotate so they stop filling the disk.
+# Each entry in `logrotate_apps` becomes /etc/logrotate.d/<name>, validated with logrotate -d.
+# Usage:
+#   ansible-playbook playbooks/medium/logrotate-app.yml
+#   ansible-playbook playbooks/medium/logrotate-app.yml -e @my-logrotate.yml
+- name: Logrotate for application logs
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    logrotate_apps:
+      - name: app
+        paths: [/opt/app/logs/*.log]
+        frequency: daily          # daily | weekly | monthly
+        rotate: 14
+        maxsize: 100M             # also rotate early if a file grows past this
+        copytruncate: true        # safe for apps that keep the file open
+        # postrotate: "systemctl reload myapp >/dev/null 2>&1 || true"
+        state: present            # present | absent
+  tasks:
+    - name: Install logrotate
+      ansible.builtin.package:
+        name: logrotate
+        state: present
+
+    - name: Deploy logrotate configs
+      ansible.builtin.template:
+        src: "{{ repo_root }}/templates/logrotate.j2"
+        dest: "/etc/logrotate.d/{{ item.name }}"
+        mode: "0644"
+        validate: logrotate -d %s
+      loop: "{{ logrotate_apps }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.state | default('present') == 'present'
+
+    - name: Remove logrotate configs marked absent
+      ansible.builtin.file:
+        path: "/etc/logrotate.d/{{ item.name }}"
+        state: absent
+      loop: "{{ logrotate_apps }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.state | default('present') == 'absent'
+
+    - name: Dry run all logrotate configs
+      ansible.builtin.command: logrotate -d /etc/logrotate.conf
+      register: dry_run
+      changed_when: false
+      failed_when: dry_run.rc != 0

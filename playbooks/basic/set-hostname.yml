@@ -1,0 +1,44 @@
+---
+# Set the hostname and stop cloud-init from resetting it on reboot.
+# Defaults to the inventory name, so `-l remote1` alone names the box "remote1".
+# Usage:
+#   ansible-playbook playbooks/basic/set-hostname.yml
+#   ansible-playbook playbooks/basic/set-hostname.yml -l remote1 -e new_hostname=web-01
+- name: Set hostname
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    new_hostname: "{{ inventory_hostname }}"
+  tasks:
+    - name: Validate hostname
+      ansible.builtin.assert:
+        that: new_hostname is match('^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,62}[a-zA-Z0-9])?$')
+        fail_msg: "'{{ new_hostname }}' is not a valid hostname"
+
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ new_hostname }}"
+        use: systemd
+
+    - name: Map hostname to loopback in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        line: "127.0.1.1 {{ new_hostname }}"
+
+    - name: Ensure cloud-init config directory exists
+      ansible.builtin.file:
+        path: /etc/cloud/cloud.cfg.d
+        state: directory
+        mode: "0755"
+
+    - name: Keep cloud-init from overwriting the hostname
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: "preserve_hostname: true\n"
+        mode: "0644"
+
+    - name: Show hostname
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} -> {{ new_hostname }}"
