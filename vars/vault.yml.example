@@ -1,0 +1,6 @@
+---
+# Copy to vars/vault.yml, fill in, then encrypt:
+#   ansible-vault encrypt vars/vault.yml
+# Never commit the unencrypted file.
+vault_git_username: "your-github-username"
+vault_git_token: "github_pat_xxxxxxxxxxxxxxxx"

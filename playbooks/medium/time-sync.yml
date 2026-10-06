@@ -1,0 +1,47 @@
+---
+# Set timezone and make sure chrony is keeping time (uses AWS time sync endpoint on EC2).
+# Usage: ansible-playbook playbooks/medium/time-sync.yml [-e timezone=UTC]
+- name: Timezone and NTP
+  hosts: all
+  become: true
+  tasks:
+    - name: Set timezone
+      community.general.timezone:
+        name: "{{ timezone }}"
+
+    - name: Install chrony
+      ansible.builtin.package:
+        name: chrony
+        state: present
+
+    - name: Ensure AWS time source is configured
+      ansible.builtin.lineinfile:
+        path: /etc/chrony.conf
+        regexp: "^server 169\\.254\\.169\\.123"
+        line: "server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4"
+        insertbefore: BOF
+      notify: Restart chronyd
+
+    - name: Start and enable chronyd
+      ansible.builtin.systemd_service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check sync status
+      ansible.builtin.command: chronyc tracking
+      register: tracking
+      changed_when: false
+
+    - name: Show sync status
+      ansible.builtin.debug:
+        msg: "{{ tracking.stdout_lines | select('search', 'Reference ID|System time|Leap status') | list }}"
+
+  handlers:
+    - name: Restart chronyd
+      ansible.builtin.systemd_service:
+        name: chronyd
+        state: restarted

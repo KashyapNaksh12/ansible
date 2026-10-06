@@ -1,0 +1,19 @@
+---
+# Check SSH connectivity and sudo access on all hosts.
+# Usage: ansible-playbook playbooks/basic/ping.yml [-l remote1]
+- name: Connectivity check
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Ping hosts
+      ansible.builtin.ping:
+
+    - name: Verify sudo works
+      ansible.builtin.command: whoami
+      become: true
+      register: sudo_user
+      changed_when: false
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} reachable, sudo user = {{ sudo_user.stdout }}"

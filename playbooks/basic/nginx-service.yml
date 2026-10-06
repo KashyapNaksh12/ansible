@@ -1,0 +1,49 @@
+---
+# Install and control nginx with tags (replaces the old test1.yml).
+# A plain run installs, enables and starts nginx, then shows its status.
+# Usage:
+#   ansible-playbook playbooks/basic/nginx-service.yml
+#   ansible-playbook playbooks/basic/nginx-service.yml -t status
+#   ansible-playbook playbooks/basic/nginx-service.yml -t restart
+#   ansible-playbook playbooks/basic/nginx-service.yml -t stop      # stop only runs when asked for
+- name: Install and manage nginx
+  hosts: servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install nginx
+      ansible.builtin.package:
+        name: nginx
+        state: present
+      tags: install
+
+    - name: Enable and start nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        enabled: true
+        state: started
+      tags: [enable, start]
+
+    - name: Restart nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: restarted
+      tags: [never, restart]
+
+    - name: Stop nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: stopped
+      tags: [never, stop]
+
+    - name: Check nginx status
+      ansible.builtin.command: systemctl status nginx --no-pager
+      register: nginx_status
+      failed_when: false
+      changed_when: false
+      tags: [always]
+
+    - name: Show nginx status
+      ansible.builtin.debug:
+        var: nginx_status.stdout_lines
+      tags: [always]

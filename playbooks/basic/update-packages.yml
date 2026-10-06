@@ -1,0 +1,48 @@
+---
+# Patch all packages. Reboots only if a reboot is needed AND reboot_if_needed=true.
+# Usage:
+#   ansible-playbook playbooks/basic/update-packages.yml
+#   ansible-playbook playbooks/basic/update-packages.yml -e reboot_if_needed=true
+#   ansible-playbook playbooks/basic/update-packages.yml -e security_only=true
+- name: Update system packages
+  hosts: all
+  become: true
+  serial: "{{ batch_size | default('50%') }}"   # patch half the fleet at a time
+  vars:
+    reboot_if_needed: false
+    security_only: false
+  tasks:
+    - name: Update packages
+      ansible.builtin.package:
+        name: "*"
+        state: latest
+      when: not security_only | bool
+      register: pkg_update
+
+    - name: Apply security updates only
+      ansible.builtin.command: "{{ ansible_pkg_mgr }} -y update --security"
+      when: security_only | bool
+      register: sec_update
+      changed_when: "'Nothing to do' not in sec_update.stdout"
+
+    - name: Ensure needs-restarting is available
+      ansible.builtin.package:
+        name: "{{ 'yum-utils' if ansible_pkg_mgr == 'yum' else 'dnf-utils' }}"
+        state: present
+
+    - name: Check whether a reboot is required
+      ansible.builtin.command: needs-restarting -r
+      register: needs_reboot
+      failed_when: needs_reboot.rc not in [0, 1]
+      changed_when: false
+
+    - name: Report reboot status
+      ansible.builtin.debug:
+        msg: "Reboot required: {{ needs_reboot.rc == 1 }}"
+
+    - name: Reboot if required and allowed
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when:
+        - needs_reboot.rc == 1
+        - reboot_if_needed | bool

@@ -1,0 +1,17 @@
+---
+# Install the common toolset from group_vars/all.yml, or your own list.
+# Usage:
+#   ansible-playbook playbooks/basic/install-packages.yml
+#   ansible-playbook playbooks/basic/install-packages.yml -e '{"packages": ["nc", "telnet"]}'
+#   ansible-playbook playbooks/basic/install-packages.yml -e '{"packages": ["telnet"]}' -e pkg_state=absent
+- name: Install packages
+  hosts: all
+  become: true
+  vars:
+    packages: "{{ common_packages }}"
+    pkg_state: present
+  tasks:
+    - name: Ensure packages are {{ pkg_state }}
+      ansible.builtin.package:
+        name: "{{ packages }}"
+        state: "{{ pkg_state }}"

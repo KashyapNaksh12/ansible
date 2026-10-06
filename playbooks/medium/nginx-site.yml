@@ -1,0 +1,62 @@
+---
+# Install nginx and deploy a site from a Jinja2 template (static site or reverse proxy).
+# Usage:
+#   ansible-playbook playbooks/medium/nginx-site.yml
+#   ansible-playbook playbooks/medium/nginx-site.yml -e server_name=app.example.com -e proxy_pass=http://127.0.0.1:3000
+- name: Nginx site setup
+  hosts: all
+  become: true
+  vars:
+    server_name: "_"
+    site_name: default_app
+    web_root: /usr/share/nginx/html
+    proxy_pass: ""            # empty = serve static files from web_root
+  tasks:
+    - name: Install nginx
+      ansible.builtin.package:
+        name: nginx
+        state: present
+
+    - name: Deploy site config
+      ansible.builtin.template:
+        src: ../../templates/nginx-site.conf.j2
+        dest: "/etc/nginx/conf.d/{{ site_name }}.conf"
+        mode: "0644"
+        backup: true
+      notify: Reload nginx
+
+    - name: Deploy index page (static mode only)
+      ansible.builtin.template:
+        src: ../../templates/index.html.j2
+        dest: "{{ web_root }}/index.html"
+        mode: "0644"
+      when: proxy_pass | length == 0
+
+    - name: Validate nginx config
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Start and enable nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Flush handlers before smoke test
+      ansible.builtin.meta: flush_handlers
+
+    - name: Smoke test
+      ansible.builtin.uri:
+        url: http://localhost/
+        status_code: [200, 502]   # 502 = proxy target not up yet, nginx itself is fine
+      register: smoke
+
+    - name: Smoke test result
+      ansible.builtin.debug:
+        msg: "nginx answered HTTP {{ smoke.status }}"
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded

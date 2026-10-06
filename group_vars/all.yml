@@ -1,0 +1,25 @@
+---
+# Shared defaults for every host. Override per run with -e "var=value".
+
+timezone: "Asia/Kolkata"
+
+common_packages:
+  - git
+  - vim
+  - curl
+  - wget
+  - unzip
+  - htop
+  - tree
+  - jq
+  - tar
+  - net-tools
+  - lsof
+
+# Health-check thresholds (percent)
+disk_usage_threshold: 85
+memory_usage_threshold: 90
+
+# Where fetched backups/reports land on the control node
+local_backup_dir: "{{ playbook_dir }}/../../backups"
+local_report_dir: "{{ playbook_dir }}/../../reports"

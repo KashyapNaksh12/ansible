@@ -1,0 +1,82 @@
+---
+# Fleet health check: disk, memory, load, required services and HTTP endpoints.
+# Fails a host if any threshold is breached and writes a summary report on the control node.
+# Usage:
+#   ansible-playbook playbooks/medium/health-check.yml
+#   ansible-playbook playbooks/medium/health-check.yml -e '{"required_services": ["sshd","nginx"]}'
+- name: Server health check
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    required_services: [sshd, crond]
+    http_checks: []           # e.g. [{url: "http://localhost", status: 200}]
+    disk_usage: []
+  tasks:
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Calculate usage figures
+      ansible.builtin.set_fact:
+        mem_used_pct: "{{ ((1 - ansible_memory_mb.nocache.free / ansible_memtotal_mb) * 100) | round(1) }}"
+        load_1m: "{{ ansible_loadavg['1m'] | default(0) | round(2) }}"
+        disk_report: >-
+          {{ ansible_mounts
+             | selectattr('size_total', 'gt', 0)
+             | rejectattr('fstype', 'in', ['tmpfs', 'devtmpfs', 'squashfs', 'overlay'])
+             | list }}
+
+    - name: Build per-mount usage list
+      ansible.builtin.set_fact:
+        disk_usage: "{{ disk_usage | default([]) + [{'mount': item.mount, 'pct': ((1 - item.size_available / item.size_total) * 100) | round(1)}] }}"
+      loop: "{{ disk_report }}"
+      loop_control:
+        label: "{{ item.mount }}"
+
+    - name: Check HTTP endpoints
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        status_code: "{{ item.status | default(200) }}"
+        timeout: 10
+      loop: "{{ http_checks }}"
+      register: http_results
+      ignore_errors: true
+
+    - name: Evaluate problems
+      ansible.builtin.set_fact:
+        problems: >-
+          {{
+            (disk_usage | selectattr('pct', 'gt', disk_usage_threshold | float)
+               | map(attribute='mount') | map('regex_replace', '^(.*)$', 'disk \1 above ' ~ disk_usage_threshold ~ '%') | list)
+            + (['memory above ' ~ memory_usage_threshold ~ '%'] if (mem_used_pct | float) > (memory_usage_threshold | float) else [])
+            + (required_services
+               | reject('in', ansible_facts.services | dict2items
+                               | selectattr('value.state', 'eq', 'running')
+                               | map(attribute='value.name') | map('regex_replace', '\.service$', '') | list)
+               | map('regex_replace', '^(.*)$', 'service \1 not running') | list)
+            + (http_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed')
+               | map(attribute='item.url') | map('regex_replace', '^(.*)$', 'HTTP check failed: \1') | list)
+          }}
+
+    - name: Show health summary
+      ansible.builtin.debug:
+        msg:
+          - "Memory used : {{ mem_used_pct }}%"
+          - "Load (1m)   : {{ load_1m }} on {{ ansible_processor_vcpus }} vCPU"
+          - "Disks       : {{ disk_usage | map(attribute='mount') | zip(disk_usage | map(attribute='pct')) | map('join', '=') | join(', ') }}"
+          - "Problems    : {{ problems if problems else 'none' }}"
+
+    - name: Write report on control node
+      ansible.builtin.lineinfile:
+        path: "{{ local_report_dir }}/health-{{ ansible_date_time.date }}.txt"
+        line: "{{ inventory_hostname }} | mem={{ mem_used_pct }}% | load={{ load_1m }} | {{ 'OK' if not problems else 'FAIL: ' ~ (problems | join('; ')) }}"
+        regexp: "^{{ inventory_hostname }} \\|"
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Fail host if unhealthy
+      ansible.builtin.fail:
+        msg: "{{ problems | join('; ') }}"
+      when: problems | length > 0

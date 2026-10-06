@@ -1,0 +1,91 @@
+---
+# Clone/update a private Git repo using credentials from an encrypted vault (no tokens in playbooks!).
+# Setup once:
+#   cp vars/vault.yml.example vars/vault.yml && ansible-vault encrypt vars/vault.yml
+# Usage:
+#   ansible-playbook playbooks/medium/deploy-app-from-git.yml --ask-vault-pass \
+#     -e repo_url=github.com/org/repo -e git_branch=main
+#   add -e restart_service=myapp to restart a systemd unit when code changes
+- name: Deploy application from Git
+  hosts: all
+  become: true
+  vars_files:
+    - ../../vars/vault.yml
+  vars:
+    repo_url: "github.com/Thinkcloudly-testing/e-commerce-site"
+    git_branch: master
+    app_dir: /opt/app
+    app_owner: ec2-user
+    restart_service: ""
+    keep_releases: 5
+  tasks:
+    - name: Install git
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_owner }}"
+        group: "{{ app_owner }}"
+        mode: "0755"
+
+    - name: Check for an existing checkout
+      ansible.builtin.stat:
+        path: "{{ app_dir }}/.git"
+      register: existing_repo
+
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: /var/backups
+        state: directory
+        mode: "0755"
+
+    - name: Back up current version before update
+      community.general.archive:
+        path: "{{ app_dir }}"
+        dest: "/var/backups/app-{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        exclude_path: ["{{ app_dir }}/.git"]
+        mode: "0640"
+      when: existing_repo.stat.exists
+
+    - name: Clone / update repository
+      ansible.builtin.git:
+        repo: "https://{{ vault_git_username }}:{{ vault_git_token }}@{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ git_branch }}"
+        force: true
+      become_user: "{{ app_owner }}"
+      register: git_result
+      no_log: true          # keeps the token out of logs
+
+    - name: Remove token from stored remote URL
+      ansible.builtin.command: git -C {{ app_dir }} remote set-url origin https://{{ repo_url }}
+      become_user: "{{ app_owner }}"
+      changed_when: false
+
+    - name: Find old backups
+      ansible.builtin.find:
+        paths: /var/backups
+        patterns: "app-*.tar.gz"
+      register: app_backups
+
+    - name: Keep only the newest {{ keep_releases }} backups
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ (app_backups.files | sort(attribute='mtime', reverse=true))[keep_releases | int:] }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Restart application service if code changed
+      ansible.builtin.systemd_service:
+        name: "{{ restart_service }}"
+        state: restarted
+      when: restart_service | length > 0 and git_result.changed
+
+    - name: Deployment summary
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ git_result.before | default('new', true) | truncate(10, true, '') }} -> {{ git_result.after | truncate(10, true, '') }} ({{ 'changed' if git_result.changed else 'no change' }})"

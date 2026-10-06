@@ -1,0 +1,58 @@
+---
+# Create or remove Linux users, with optional SSH key and sudo access.
+# Edit the `users` list below (or pass it with -e @users.yml).
+# Usage: ansible-playbook playbooks/basic/manage-users.yml
+- name: Manage users
+  hosts: all
+  become: true
+  vars:
+    users:
+      - name: devops
+        state: present          # present | absent
+        sudo: true
+        ssh_key: ""             # paste public key, e.g. "ssh-ed25519 AAAA... you@laptop"
+        shell: /bin/bash
+  tasks:
+    - name: Create / remove user
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        state: "{{ item.state | default('present') }}"
+        shell: "{{ item.shell | default('/bin/bash') }}"
+        remove: "{{ item.state | default('present') == 'absent' }}"
+      loop: "{{ users }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Add authorized SSH key
+      ansible.posix.authorized_key:
+        user: "{{ item.name }}"
+        key: "{{ item.ssh_key }}"
+        state: present
+      loop: "{{ users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.state | default('present') == 'present'
+        - item.ssh_key | default('') | length > 0
+
+    - name: Grant passwordless sudo
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ item.name }}"
+        content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+        mode: "0440"
+        validate: visudo -cf %s
+      loop: "{{ users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.state | default('present') == 'present'
+        - item.sudo | default(false)
+
+    - name: Remove sudo file for removed / non-sudo users
+      ansible.builtin.file:
+        path: "/etc/sudoers.d/{{ item.name }}"
+        state: absent
+      loop: "{{ users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.state | default('present') == 'absent' or not item.sudo | default(false)

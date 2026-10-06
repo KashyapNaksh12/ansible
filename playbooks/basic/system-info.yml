@@ -1,0 +1,37 @@
+---
+# Print a quick system summary per host (OS, uptime, CPU, memory, disk, IP).
+# Usage: ansible-playbook playbooks/basic/system-info.yml
+- name: System information report
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Get disk usage
+      ansible.builtin.command: df -h -x tmpfs -x devtmpfs
+      register: disk
+      changed_when: false
+
+    - name: Get top 5 memory-consuming processes
+      ansible.builtin.shell: set -o pipefail && ps aux --sort=-%mem | head -n 6
+      args:
+        executable: /bin/bash
+      register: top_mem
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "Host      : {{ inventory_hostname }} ({{ ansible_hostname }})"
+          - "OS        : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel    : {{ ansible_kernel }}"
+          - "Uptime    : {{ (ansible_uptime_seconds / 3600) | round(1) }} hours"
+          - "CPU       : {{ ansible_processor_vcpus }} vCPU"
+          - "Memory    : {{ ansible_memfree_mb }} MB free / {{ ansible_memtotal_mb }} MB total"
+          - "Private IP: {{ ansible_default_ipv4.address | default('n/a') }}"
+
+    - name: Show disk usage
+      ansible.builtin.debug:
+        var: disk.stdout_lines
+
+    - name: Show top memory processes
+      ansible.builtin.debug:
+        var: top_mem.stdout_lines

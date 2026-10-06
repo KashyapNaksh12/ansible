@@ -1,0 +1,82 @@
+---
+# Archive directories on each host, fetch the archive to the control node, rotate old ones.
+# Optionally install a daily cron job that does the same archive on the host itself.
+# Usage:
+#   ansible-playbook playbooks/medium/backup.yml
+#   ansible-playbook playbooks/medium/backup.yml -e '{"backup_paths": ["/etc", "/opt/app"]}' -e fetch_to_local=false
+#   ansible-playbook playbooks/medium/backup.yml -e schedule_cron=true
+- name: Backup directories
+  hosts: all
+  become: true
+  vars:
+    backup_paths: [/etc/nginx, /opt/app]
+    remote_backup_dir: /var/backups/ansible
+    retention_count: 7
+    fetch_to_local: true
+    schedule_cron: false
+    cron_hour: "2"
+    cron_minute: "30"
+  tasks:
+    - name: Check which backup paths exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ backup_paths }}"
+      register: path_stats
+
+    - name: Keep only existing paths
+      ansible.builtin.set_fact:
+        existing_paths: "{{ path_stats.results | selectattr('stat.exists') | map(attribute='item') | list }}"
+
+    - name: Skip host when nothing to back up
+      ansible.builtin.meta: end_host
+      when: existing_paths | length == 0
+
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ remote_backup_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Create archive
+      community.general.archive:
+        path: "{{ existing_paths }}"
+        dest: "{{ remote_backup_dir }}/{{ inventory_hostname }}-{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        format: gz
+        mode: "0600"
+      register: archive
+
+    - name: Fetch archive to control node
+      ansible.builtin.fetch:
+        src: "{{ archive.dest }}"
+        dest: "{{ local_backup_dir }}/{{ inventory_hostname }}/"
+        flat: true
+      when: fetch_to_local | bool
+
+    - name: Find existing archives
+      ansible.builtin.find:
+        paths: "{{ remote_backup_dir }}"
+        patterns: "{{ inventory_hostname }}-*.tar.gz"
+      register: archives
+
+    - name: Rotate old archives (keep {{ retention_count }})
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ (archives.files | sort(attribute='mtime', reverse=true))[retention_count | int:] }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Schedule daily on-host backup via cron
+      ansible.builtin.cron:
+        name: "ansible daily backup"
+        user: root
+        hour: "{{ cron_hour }}"
+        minute: "{{ cron_minute }}"
+        job: >-
+          tar -czf {{ remote_backup_dir }}/{{ inventory_hostname }}-$(date +\%Y\%m\%dT\%H\%M\%S).tar.gz {{ existing_paths | join(' ') }} 2>/dev/null;
+          ls -1t {{ remote_backup_dir }}/{{ inventory_hostname }}-*.tar.gz | tail -n +{{ retention_count | int + 1 }} | xargs -r rm -f
+      when: schedule_cron | bool
+
+    - name: Backup summary
+      ansible.builtin.debug:
+        msg: "{{ archive.dest }} ({{ (archive.dest_state == 'archive') | ternary('ok', archive.dest_state) }}), paths: {{ existing_paths }}"

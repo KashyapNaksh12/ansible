@@ -1,0 +1,21 @@
+---
+# Rolling reboot: one host at a time, waits for it to come back before the next.
+# Usage: ansible-playbook playbooks/basic/reboot.yml [-l remote1]
+- name: Rolling reboot
+  hosts: all
+  become: true
+  serial: 1
+  tasks:
+    - name: Reboot and wait
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible"
+        reboot_timeout: 600
+
+    - name: Show uptime after reboot
+      ansible.builtin.command: uptime
+      register: up
+      changed_when: false
+
+    - name: Uptime
+      ansible.builtin.debug:
+        var: up.stdout

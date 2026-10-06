@@ -1,0 +1,5 @@
+vars/vault.yml
+backups/
+reports/
+*.retry
+.vault_pass*
