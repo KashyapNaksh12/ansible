@@ -20,3 +20,4 @@ rules:
     forbid-explicit-octal: true
   truthy:
     allowed-values: ["true", "false"]
+    check-keys: false
