@@ -57,12 +57,18 @@
         dest: "{{ app_dir }}"
         version: "{{ git_branch }}"
         force: true
+      become: true
       become_user: "{{ app_owner }}"
       register: git_result
       no_log: true          # keeps the token out of logs
 
     - name: Remove token from stored remote URL
-      ansible.builtin.command: git -C {{ app_dir }} remote set-url origin https://{{ repo_url }}
+      community.general.git_config:
+        repo: "{{ app_dir }}"
+        scope: local
+        name: remote.origin.url
+        value: "https://{{ repo_url }}"
+      become: true
       become_user: "{{ app_owner }}"
       changed_when: false
 
@@ -72,11 +78,11 @@
         patterns: "app-*.tar.gz"
       register: app_backups
 
-    - name: Keep only the newest {{ keep_releases }} backups
+    - name: Rotate old backups, keep {{ keep_releases }}
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ (app_backups.files | sort(attribute='mtime', reverse=true))[keep_releases | int:] }}"
+      loop: "{{ (app_backups.files | sort(attribute='mtime', reverse=true))[keep_releases | int :] }}"
       loop_control:
         label: "{{ item.path }}"
 
@@ -88,4 +94,8 @@
 
     - name: Deployment summary
       ansible.builtin.debug:
-        msg: "{{ inventory_hostname }}: {{ git_result.before | default('new', true) | truncate(10, true, '') }} -> {{ git_result.after | truncate(10, true, '') }} ({{ 'changed' if git_result.changed else 'no change' }})"
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ git_result.before | default('new', true) | truncate(10, true, '') }} ->
+          {{ git_result.after | truncate(10, true, '') }}
+          ({{ 'changed' if git_result.changed else 'no change' }})

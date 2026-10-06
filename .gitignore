@@ -3,3 +3,4 @@ backups/
 reports/
 *.retry
 .vault_pass*
+.ansible/

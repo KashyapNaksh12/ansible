@@ -24,7 +24,7 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `system-info.yml` | OS, uptime, CPU, memory, disk, top processes | `ansible-playbook playbooks/basic/system-info.yml` |
 | `update-packages.yml` | Patches packages in batches, reboots only if needed and allowed | `... -e reboot_if_needed=true` / `-e security_only=true` |
 | `install-packages.yml` | Installs the common toolset or a custom list | `... -e '{"packages":["nc"]}'` |
-| `manage-service.yml` | Starts, stops, restarts, reloads or checks the status of any service | `... -e service=nginx -e action=restarted` |
+| `manage-service.yml` | Starts, stops, restarts, reloads or checks the status of any service | `... -e service=nginx -e service_action=restarted` |
 | `manage-users.yml` | Creates or removes users, with SSH key and sudo | edit the `users` list |
 | `nginx-service.yml` | Installs nginx and controls it with tags. `stop` and `restart` run only when asked for | `... -t restart` / `-t stop` / `-t status` |
 | `reboot.yml` | Rolling reboot, one host at a time | `... -l remote1` |
