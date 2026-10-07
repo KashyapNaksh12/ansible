@@ -1,0 +1,56 @@
+---
+# Add or remove cron jobs. Installs cronie first (Amazon Linux 2023 does not ship it).
+# Edit the `cron_jobs` list below or pass your own with -e @cron.yml.
+# Usage: ansible-playbook playbooks/basic/manage-cron.yml
+- name: Manage cron jobs
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    cron_jobs:
+      - name: clean-old-tmp
+        job: "find /tmp -xdev -type f -mtime +7 -delete"
+        minute: "0"
+        hour: "3"
+        user: root
+        state: present            # present | absent
+  tasks:
+    - name: Install cronie
+      ansible.builtin.package:
+        name: cronie
+        state: present
+
+    - name: Start and enable crond
+      ansible.builtin.systemd_service:
+        name: crond
+        state: started
+        enabled: true
+
+    - name: Add / remove cron jobs
+      ansible.builtin.cron:
+        name: "{{ item.name }}"
+        job: "{{ item.job | default(omit) }}"
+        minute: "{{ item.minute | default('*') }}"
+        hour: "{{ item.hour | default('*') }}"
+        day: "{{ item.day | default('*') }}"
+        month: "{{ item.month | default('*') }}"
+        weekday: "{{ item.weekday | default('*') }}"
+        user: "{{ item.user | default('root') }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ cron_jobs }}"
+      loop_control:
+        label: "{{ item.user | default('root') }}: {{ item.name }} ({{ item.state | default('present') }})"
+
+    - name: List crontabs for affected users
+      ansible.builtin.command: crontab -l -u {{ item }}
+      loop: "{{ cron_jobs | map(attribute='user', default='root') | unique | list }}"
+      register: crontabs
+      changed_when: false
+      failed_when: false
+
+    - name: Show crontabs
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.stdout_lines | default([]) }}"
+      loop: "{{ crontabs.results }}"
+      loop_control:
+        label: "{{ item.item }}"

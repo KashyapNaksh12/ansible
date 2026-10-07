@@ -62,7 +62,7 @@
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ (archives.files | sort(attribute='mtime', reverse=true))[retention_count | int:] }}"
+      loop: "{{ (archives.files | sort(attribute='mtime', reverse=true))[retention_count | int :] }}"
       loop_control:
         label: "{{ item.path }}"
 

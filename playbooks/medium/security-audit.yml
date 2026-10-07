@@ -1,0 +1,98 @@
+---
+# Read-only security audit: pending security patches, listening ports, extra root accounts,
+# empty passwords, failed SSH logins, effective sshd settings and world-writable files in /etc.
+# Changes nothing on the hosts. Writes reports/security-<date>.txt on the control node.
+# Usage:
+#   ansible-playbook playbooks/medium/security-audit.yml
+#   ansible-playbook playbooks/medium/security-audit.yml -e fail_on_findings=true
+- name: Security audit
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    failed_login_window: "24 hours ago"
+    failed_login_threshold: 20
+    fail_on_findings: false
+  tasks:
+    - name: List pending security advisories
+      ansible.builtin.command: "{{ 'yum -q updateinfo list security' if ansible_pkg_mgr == 'yum' else 'dnf -q updateinfo list --security' }}"
+      register: sec_advisories
+      changed_when: false
+      failed_when: false
+
+    - name: List listening ports
+      ansible.builtin.command: ss -tulpnH
+      register: listening
+      changed_when: false
+
+    - name: Read passwd database
+      ansible.builtin.getent:
+        database: passwd
+
+    - name: Read shadow database
+      ansible.builtin.getent:
+        database: shadow
+
+    - name: Read effective sshd config
+      ansible.builtin.command: sshd -T
+      register: sshd_t
+      changed_when: false
+
+    - name: Count failed SSH logins
+      ansible.builtin.command: journalctl _COMM=sshd --since "{{ failed_login_window }}" --no-pager -q
+      register: sshd_journal
+      changed_when: false
+
+    - name: Find world-writable files in /etc
+      ansible.builtin.command: find /etc -xdev -type f -perm -0002
+      register: world_writable
+      changed_when: false
+
+    - name: Build findings
+      ansible.builtin.set_fact:
+        sec_count: "{{ sec_advisories.stdout_lines | select('search', 'ALAS') | list | length }}"
+        failed_logins: "{{ sshd_journal.stdout_lines | select('search', 'Failed password|Invalid user') | list | length }}"
+        extra_root: "{{ getent_passwd | dict2items | selectattr('value.1', 'eq', '0') | map(attribute='key') | reject('eq', 'root') | list }}"
+        empty_pw: "{{ getent_shadow | dict2items | selectattr('value.0', 'eq', '') | map(attribute='key') | list }}"
+        root_login: "{{ sshd_t.stdout | regex_search('^permitrootlogin (\\S+)', '\\1', multiline=True) | default(['unknown'], true) | first }}"
+        password_auth: "{{ sshd_t.stdout | regex_search('^passwordauthentication (\\S+)', '\\1', multiline=True) | default(['unknown'], true) | first }}"
+
+    - name: Evaluate findings
+      ansible.builtin.set_fact:
+        findings: >-
+          {{
+            ([sec_count ~ ' pending security advisories'] if sec_count | int > 0 else [])
+            + (['extra uid 0 accounts: ' ~ extra_root | join(',')] if extra_root else [])
+            + (['accounts with empty password: ' ~ empty_pw | join(',')] if empty_pw else [])
+            + (['sshd permitrootlogin=' ~ root_login] if root_login != 'no' else [])
+            + (['sshd passwordauthentication=' ~ password_auth] if password_auth != 'no' else [])
+            + ([failed_logins ~ ' failed SSH logins since ' ~ failed_login_window]
+               if failed_logins | int > failed_login_threshold | int else [])
+            + (['world-writable files in /etc: ' ~ world_writable.stdout_lines | join(',')] if world_writable.stdout_lines else [])
+          }}
+
+    - name: Show audit summary
+      ansible.builtin.debug:
+        msg:
+          - "Security advisories: {{ sec_count }}"
+          - "Failed SSH logins  : {{ failed_logins }} since {{ failed_login_window }}"
+          - "Listening ports    : {{ listening.stdout_lines | map('regex_replace', '^(\\S+\\s+){4}(\\S+).*$', '\\2') | unique | list }}"
+          - "sshd               : permitrootlogin={{ root_login }}, passwordauthentication={{ password_auth }}"
+          - "Findings           : {{ findings if findings else 'none' }}"
+
+    - name: Write report on control node
+      ansible.builtin.lineinfile:
+        path: "{{ local_report_dir }}/security-{{ ansible_date_time.date }}.txt"
+        line: >-
+          {{ inventory_hostname }} | advisories={{ sec_count }} | failed_logins={{ failed_logins }} |
+          {{ 'OK' if not findings else 'FINDINGS: ' ~ (findings | join('; ')) }}
+        regexp: "^{{ inventory_hostname }} \\|"
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Fail host on findings
+      ansible.builtin.fail:
+        msg: "{{ findings | join('; ') }}"
+      when: fail_on_findings | bool and findings | length > 0

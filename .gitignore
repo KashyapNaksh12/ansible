@@ -1,5 +1,7 @@
 vars/vault.yml
 backups/
 reports/
+logs/
 *.retry
 .vault_pass*
+.ansible/

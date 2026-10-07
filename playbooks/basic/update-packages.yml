@@ -13,7 +13,7 @@
     security_only: false
   tasks:
     - name: Update packages
-      ansible.builtin.package:
+      ansible.builtin.package:  # noqa: package-latest - patching everything is the point of this playbook
         name: "*"
         state: latest
       when: not security_only | bool

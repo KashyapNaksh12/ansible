@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+{{ item.paths | join(' ') }} {
+    {{ item.frequency | default('daily') }}
+    rotate {{ item.rotate | default(14) }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+{% if item.copytruncate | default(true) %}
+    copytruncate
+{% else %}
+    create {{ item.create_mode | default('0640') }} {{ item.owner | default('root') }} {{ item.group | default('root') }}
+{% endif %}
+{% if item.maxsize is defined %}
+    maxsize {{ item.maxsize }}
+{% endif %}
+{% if item.postrotate is defined %}
+    sharedscripts
+    postrotate
+        {{ item.postrotate }}
+    endscript
+{% endif %}
+}

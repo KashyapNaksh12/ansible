@@ -20,6 +20,10 @@ common_packages:
 disk_usage_threshold: 85
 memory_usage_threshold: 90
 
+# Repo root on the control node (playbooks live two levels down)
+repo_root: "{{ playbook_dir | dirname | dirname }}"
+
 # Where fetched backups/reports land on the control node
-local_backup_dir: "{{ playbook_dir }}/../../backups"
-local_report_dir: "{{ playbook_dir }}/../../reports"
+local_backup_dir: "{{ repo_root }}/backups"
+local_report_dir: "{{ repo_root }}/reports"
+local_log_dir: "{{ repo_root }}/logs"

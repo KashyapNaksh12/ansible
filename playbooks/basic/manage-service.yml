@@ -1,28 +1,28 @@
 ---
 # Start / stop / restart / check any systemd service.
 # Usage:
-#   ansible-playbook playbooks/basic/manage-service.yml -e service=nginx -e action=restarted
-#   ansible-playbook playbooks/basic/manage-service.yml -e service=nginx -e action=status
-# action: started | stopped | restarted | reloaded | status
+#   ansible-playbook playbooks/basic/manage-service.yml -e service=nginx -e service_action=restarted
+#   ansible-playbook playbooks/basic/manage-service.yml -e service=nginx -e service_action=status
+# service_action: started | stopped | restarted | reloaded | status
 - name: Manage a systemd service
   hosts: all
   become: true
   gather_facts: false
   vars:
-    action: status
+    service_action: status
   tasks:
     - name: Validate input
       ansible.builtin.assert:
         that:
           - service is defined
-          - action in ['started', 'stopped', 'restarted', 'reloaded', 'status']
-        fail_msg: "Pass -e service=<name> -e action=started|stopped|restarted|reloaded|status"
+          - service_action in ['started', 'stopped', 'restarted', 'reloaded', 'status']
+        fail_msg: "Pass -e service=<name> -e service_action=started|stopped|restarted|reloaded|status"
 
     - name: Change service state
       ansible.builtin.systemd_service:
         name: "{{ service }}"
-        state: "{{ action }}"
-      when: action != 'status'
+        state: "{{ service_action }}"
+      when: service_action != 'status'
 
     - name: Get service status
       ansible.builtin.command: systemctl status {{ service }} --no-pager -l
