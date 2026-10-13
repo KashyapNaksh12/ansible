@@ -1,0 +1,49 @@
+---
+# Run one shell command on every host and collect the output in a report.
+# Writes reports/command-<date>.txt on the control node (one block per host).
+# Usage:
+#   ansible-playbook playbooks/basic/run-command.yml -e cmd="df -h /"
+#   ansible-playbook playbooks/basic/run-command.yml -e cmd="systemctl is-active nginx" -e use_sudo=false
+#   ansible-playbook playbooks/basic/run-command.yml -e cmd="rm -rf /tmp/build" -e read_only=false
+- name: Run command
+  hosts: all
+  become: "{{ use_sudo | bool }}"
+  gather_facts: false
+  vars:
+    cmd: ""
+    use_sudo: true
+    read_only: true            # false marks the task as changed, for commands that modify the host
+    fail_on_error: false       # true fails the host on a non-zero exit code
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that: cmd | length > 0
+        fail_msg: 'Pass the command with -e cmd="..."'
+
+    - name: Run command
+      ansible.builtin.shell: "{{ cmd }}"   # noqa command-instead-of-shell
+      register: result
+      changed_when: not (read_only | bool)
+      failed_when: fail_on_error | bool and result.rc != 0
+
+    - name: Show output
+      ansible.builtin.debug:
+        msg:
+          - "rc={{ result.rc }}"
+          - "{{ result.stdout_lines }}"
+          - "{{ result.stderr_lines }}"
+
+    - name: Write report on control node
+      ansible.builtin.blockinfile:
+        path: "{{ local_report_dir }}/command-{{ lookup('pipe', 'date +%F') }}.txt"
+        marker: "# {mark} {{ inventory_hostname }}"
+        block: |
+          $ {{ cmd }}
+          rc={{ result.rc }}
+          {{ result.stdout }}
+          {{ result.stderr }}
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      throttle: 1

@@ -1,0 +1,62 @@
+---
+# Apply kernel tuning for busy web/app servers and persist it in /etc/sysctl.d/.
+# vm.swappiness is left to swap-file.yml.
+# Usage:
+#   ansible-playbook playbooks/medium/sysctl-tuning.yml --check --diff
+#   ansible-playbook playbooks/medium/sysctl-tuning.yml
+#   ansible-playbook playbooks/medium/sysctl-tuning.yml -e sysctl_state=absent   # remove our settings
+- name: Sysctl tuning
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    sysctl_file: /etc/sysctl.d/90-ansible-tuning.conf
+    sysctl_state: present            # present | absent
+    sysctl_settings:
+      fs.file-max: 2097152                     # system-wide open file limit
+      net.core.somaxconn: 4096                 # listen() backlog for nginx/app servers
+      net.core.netdev_max_backlog: 16384
+      net.ipv4.tcp_max_syn_backlog: 8192
+      net.ipv4.ip_local_port_range: "1024 65000"
+      net.ipv4.tcp_tw_reuse: 1                 # reuse TIME_WAIT sockets for outbound connections
+      net.ipv4.tcp_fin_timeout: 15
+      net.ipv4.tcp_keepalive_time: 300
+      vm.max_map_count: 262144                 # needed by Elasticsearch/OpenSearch
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that: sysctl_state in ['present', 'absent']
+
+    - name: Apply sysctl settings
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_file: "{{ sysctl_file }}"
+        sysctl_set: true
+        reload: true
+        state: present
+      loop: "{{ sysctl_settings | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} = {{ item.value }}"
+      when: sysctl_state == 'present'
+
+    - name: Remove tuning file
+      ansible.builtin.file:
+        path: "{{ sysctl_file }}"
+        state: absent
+      when: sysctl_state == 'absent'
+      notify: Reload sysctl
+
+    - name: Read live values
+      ansible.builtin.command: sysctl -n {{ sysctl_settings.keys() | join(' ') }}
+      register: live
+      changed_when: false
+
+    - name: Show live values
+      ansible.builtin.debug:
+        msg: "{{ sysctl_settings.keys() | zip(live.stdout_lines) | map('join', ' = ') | list }}"
+
+  handlers:
+    - name: Reload sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: true

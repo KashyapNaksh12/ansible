@@ -1,0 +1,57 @@
+---
+# Push files or whole directories from the control node to every host.
+# Existing files are backed up with a timestamp before they are overwritten.
+# Usage:
+#   ansible-playbook playbooks/basic/copy-files.yml -e src=./app.env -e dest=/opt/app/.env
+#   ansible-playbook playbooks/basic/copy-files.yml -e @my-files.yml      # with a `files` list
+#   ansible-playbook playbooks/basic/copy-files.yml -e src=./app.env -e dest=/opt/app/.env --check --diff
+- name: Copy files to servers
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    # Single file shortcut: -e src=... -e dest=...
+    src: ""
+    dest: ""
+    files: >-
+      {{ [{'src': src, 'dest': dest}] if (src | length > 0 and dest | length > 0) else [] }}
+    # Each entry: src, dest, and optional owner, group, mode (defaults below)
+    default_owner: root
+    default_group: root
+    default_mode: "0644"
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - files | length > 0
+          - files | selectattr('src', 'undefined') | list | length == 0
+          - files | selectattr('dest', 'undefined') | list | length == 0
+        fail_msg: "Pass -e src=... -e dest=... or a `files` list where every entry has src and dest"
+
+    - name: Ensure destination directories exist
+      ansible.builtin.file:
+        path: "{{ item.dest if item.src is search('/$') else (item.dest | dirname) }}"
+        state: directory
+        owner: "{{ item.owner | default(default_owner) }}"
+        group: "{{ item.group | default(default_group) }}"
+        mode: "0755"
+      loop: "{{ files }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Copy files
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ item.owner | default(default_owner) }}"
+        group: "{{ item.group | default(default_group) }}"
+        mode: "{{ item.mode | default(default_mode) }}"
+        backup: true
+      loop: "{{ files }}"
+      loop_control:
+        label: "{{ item.src }} -> {{ item.dest }}"
+      register: copied
+
+    - name: Show what changed
+      ansible.builtin.debug:
+        msg: "{{ copied.results | selectattr('changed') | map(attribute='item.dest') | list or 'nothing changed' }}"

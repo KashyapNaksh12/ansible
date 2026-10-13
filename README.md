@@ -32,6 +32,8 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `fetch-logs.yml` | Pulls log files and a journal export into `logs/<host>/` | `... -e journal_since="2 hours ago"` |
 | `set-hostname.yml` | Sets the hostname and stops cloud-init from resetting it | `... -l remote1 -e new_hostname=web-01` |
 | `manage-cron.yml` | Installs cronie and adds or removes cron jobs | edit the `cron_jobs` list |
+| `copy-files.yml` | Pushes files or directories to servers, backing up anything it overwrites | `... -e src=./app.env -e dest=/opt/app/.env` |
+| `run-command.yml` | Runs one shell command everywhere and saves output to `reports/command-<date>.txt` | `... -e cmd="df -h /"` |
 
 ## Medium playbooks
 
@@ -48,6 +50,10 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `swap-file.yml` | Creates or removes a swap file, persists it in fstab, sets swappiness | `... -e swap_size_mb=4096` / `-e swap_state=absent` |
 | `security-audit.yml` | Read-only audit: security patches, ports, uid 0 accounts, empty passwords, sshd, failed logins. Writes `reports/security-<date>.txt` | `... -e fail_on_findings=true` |
 | `logrotate-app.yml` | Deploys validated `/etc/logrotate.d/` configs for app logs | edit the `logrotate_apps` list |
+| `sysctl-tuning.yml` | Applies kernel network/file limits tuning, persisted in `/etc/sysctl.d/` | `... --check --diff` / `-e sysctl_state=absent` |
+| `node-exporter.yml` | Installs Prometheus node_exporter (checksum-verified) as a systemd service on port 9100 | `... -e node_exporter_version=1.8.2` |
+| `cloudwatch-agent.yml` | Installs the CloudWatch agent for memory, disk and swap metrics plus log shipping. Needs the `CloudWatchAgentServerPolicy` instance role | `... -e cw_namespace=MyApp` |
+| `lamp-stack.yml` | Installs Apache, MariaDB and PHP (php-fpm) on Amazon Linux 2023, removes MariaDB test data, optionally creates an app DB and user from the vault | `... --ask-vault-pass -e lamp_db_name=shop -e lamp_db_user=shop` |
 
 ## Secrets (Ansible Vault)
 
