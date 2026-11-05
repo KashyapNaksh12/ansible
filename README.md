@@ -54,6 +54,8 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `node-exporter.yml` | Installs Prometheus node_exporter (checksum-verified) as a systemd service on port 9100 | `... -e node_exporter_version=1.8.2` |
 | `cloudwatch-agent.yml` | Installs the CloudWatch agent for memory, disk and swap metrics plus log shipping. Needs the `CloudWatchAgentServerPolicy` instance role | `... -e cw_namespace=MyApp` |
 | `lamp-stack.yml` | Installs Apache, MariaDB and PHP (php-fpm) on Amazon Linux 2023, removes MariaDB test data, optionally creates an app DB and user from the vault | `... --ask-vault-pass -e lamp_db_name=shop -e lamp_db_user=shop` |
+| `java-stack.yml` | Installs Amazon Corretto 17/21 and Tomcat 10.1 (checksum-verified, systemd, versioned install with symlink), optionally deploys a WAR | `... -e java_version=21 -e war_src=./app.war -e war_name=app` |
+| `java-app-service.yml` | Runs a Spring Boot or any executable jar as a systemd service, keeps a rollback copy of the previous jar | `... -e app_name=myapp -e jar_src=./target/myapp.jar` |
 
 ## Secrets (Ansible Vault)
 

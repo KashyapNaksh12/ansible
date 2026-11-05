@@ -1,0 +1,154 @@
+---
+# Run a Java application jar (Spring Boot or any executable jar) as a systemd service.
+# Copies the jar from the control node, keeps the previous jar as a rollback copy and restarts on change.
+# Needs a JDK on the host: run playbooks/medium/java-stack.yml first, or install java-<n>-amazon-corretto.
+# Usage:
+#   ansible-playbook playbooks/medium/java-app-service.yml -e app_name=myapp -e jar_src=./target/myapp.jar
+#   ansible-playbook playbooks/medium/java-app-service.yml -e app_name=myapp -e jar_src=./myapp.jar -e app_port=9000 -e java_heap=1g
+#   ansible-playbook playbooks/medium/java-app-service.yml -e app_name=myapp -e app_state=absent
+- name: Java app as a systemd service
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    app_name: ""
+    jar_src: ""                         # jar on the control node
+    app_state: present                  # present | absent
+    app_user: "{{ app_name }}"
+    app_dir: "/opt/{{ app_name }}"
+    app_port: 8080
+    java_version: "17"
+    java_heap: 512m
+    app_args: ""                        # extra program arguments, e.g. --spring.profiles.active=prod
+    app_env: {}                         # environment variables for the service
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - app_name is match('^[a-z][a-z0-9_-]{1,30}$')
+          - app_state in ['present', 'absent']
+          - app_state == 'absent' or (jar_src | length > 0 and jar_src is file)
+          - java_heap is match('^[0-9]+[mg]$')
+          - app_port | int > 0
+        fail_msg: "Set app_name (lowercase), jar_src (an existing file) and a heap like 512m"
+
+    - name: Deploy the service
+      when: app_state == 'present'
+      block:
+        - name: Install Amazon Corretto JDK
+          ansible.builtin.dnf:
+            name: "java-{{ java_version }}-amazon-corretto-headless"
+            state: present
+
+        - name: Create service user
+          ansible.builtin.user:
+            name: "{{ app_user }}"
+            system: true
+            shell: /sbin/nologin
+            home: "{{ app_dir }}"
+            create_home: false
+
+        - name: Create app directory
+          ansible.builtin.file:
+            path: "{{ app_dir }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0755"
+
+        - name: Keep the current jar as a rollback copy
+          ansible.builtin.copy:
+            src: "{{ app_dir }}/{{ app_name }}.jar"
+            dest: "{{ app_dir }}/{{ app_name }}.jar.prev"
+            remote_src: true
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0644"
+          failed_when: false
+          changed_when: false
+
+        - name: Copy jar
+          ansible.builtin.copy:
+            src: "{{ jar_src }}"
+            dest: "{{ app_dir }}/{{ app_name }}.jar"
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0644"
+          notify: Restart app
+
+        - name: Deploy systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ app_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description={{ app_name }} (Java)
+              After=network.target
+
+              [Service]
+              User={{ app_user }}
+              Group={{ app_user }}
+              WorkingDirectory={{ app_dir }}
+              Environment=SERVER_PORT={{ app_port }}
+              {% for key, value in app_env.items() %}
+              Environment="{{ key }}={{ value }}"
+              {% endfor %}
+              ExecStart=/usr/bin/java -Xms{{ java_heap }} -Xmx{{ java_heap }} -jar {{ app_dir }}/{{ app_name }}.jar {{ app_args }}
+              SuccessExitStatus=143
+              Restart=on-failure
+              RestartSec=5
+              NoNewPrivileges=true
+              ProtectSystem=full
+
+              [Install]
+              WantedBy=multi-user.target
+          notify:
+            - Reload systemd
+            - Restart app
+
+        - name: Flush handlers
+          ansible.builtin.meta: flush_handlers
+
+        - name: Start and enable the service
+          ansible.builtin.systemd_service:
+            name: "{{ app_name }}"
+            state: started
+            enabled: true
+
+        - name: Check the service stays up
+          ansible.builtin.command:
+            argv: [systemctl, is-active, "{{ app_name }}"]
+          register: svc
+          retries: 10
+          delay: 3
+          until: svc.stdout == 'active'
+          changed_when: false
+
+    - name: Remove the service
+      when: app_state == 'absent'
+      block:
+        - name: Stop and disable
+          ansible.builtin.systemd_service:
+            name: "{{ app_name }}"
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Remove unit and app directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["/etc/systemd/system/{{ app_name }}.service", "{{ app_dir }}"]
+          notify: Reload systemd
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart app
+      ansible.builtin.systemd_service:
+        name: "{{ app_name }}"
+        state: restarted

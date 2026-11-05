@@ -1,0 +1,230 @@
+---
+# Install a Java stack on Amazon Linux 2023: Amazon Corretto JDK plus Apache Tomcat 10.1 as a systemd service.
+# Tomcat is downloaded from archive.apache.org and verified against its published sha512 checksum.
+# Optionally deploys a WAR from the control node. Open port 8080 in the security group as needed.
+# Usage:
+#   ansible-playbook playbooks/medium/java-stack.yml
+#   ansible-playbook playbooks/medium/java-stack.yml -e java_version=21 -e tomcat_heap=1g
+#   ansible-playbook playbooks/medium/java-stack.yml -e war_src=./app.war -e war_name=app
+#   ansible-playbook playbooks/medium/java-stack.yml -e tomcat_state=absent
+- name: Java stack (Corretto + Tomcat)
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    java_version: "17"                  # 17 | 21
+    tomcat_version: "10.1.34"
+    tomcat_port: 8080
+    tomcat_heap: 512m                   # used for both -Xms and -Xmx
+    tomcat_state: present               # present | absent
+    tomcat_user: tomcat
+    tomcat_home: /opt/tomcat
+    tomcat_base_url: "https://archive.apache.org/dist/tomcat/tomcat-{{ tomcat_version.split('.')[0] }}/v{{ tomcat_version }}/bin"
+    tomcat_archive: "apache-tomcat-{{ tomcat_version }}.tar.gz"
+    # Optional WAR deploy: path on the control node and the context name (app -> /app)
+    war_src: ""
+    war_name: ROOT
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - java_version in ['17', '21']
+          - tomcat_state in ['present', 'absent']
+          - tomcat_version is match('^10\.1\.[0-9]+$')
+          - tomcat_heap is match('^[0-9]+[mg]$')
+          - war_name is match('^[A-Za-z0-9_]+$')
+        fail_msg: "Amazon Linux 2023 only, java_version 17 or 21, tomcat_version 10.1.x, tomcat_heap like 512m or 1g"
+
+    - name: Install Java and Tomcat
+      when: tomcat_state == 'present'
+      block:
+        - name: Install Amazon Corretto JDK
+          ansible.builtin.dnf:
+            name: "java-{{ java_version }}-amazon-corretto-devel"
+            state: present
+
+        - name: Create tomcat system user
+          ansible.builtin.user:
+            name: "{{ tomcat_user }}"
+            system: true
+            shell: /sbin/nologin
+            home: "{{ tomcat_home }}"
+            create_home: false
+
+        - name: Download Tomcat
+          ansible.builtin.get_url:
+            url: "{{ tomcat_base_url }}/{{ tomcat_archive }}"
+            dest: "/tmp/{{ tomcat_archive }}"
+            checksum: "sha512:{{ tomcat_base_url }}/{{ tomcat_archive }}.sha512"
+            mode: "0644"
+
+        - name: Create versioned install directory
+          ansible.builtin.file:
+            path: "{{ tomcat_home }}-{{ tomcat_version }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Unpack Tomcat
+          ansible.builtin.unarchive:
+            src: "/tmp/{{ tomcat_archive }}"
+            dest: "{{ tomcat_home }}-{{ tomcat_version }}"
+            remote_src: true
+            extra_opts: [--strip-components=1]
+            creates: "{{ tomcat_home }}-{{ tomcat_version }}/bin/catalina.sh"
+          notify: Restart tomcat
+
+        # A symlink makes upgrades a version bump and rollbacks a symlink flip
+        - name: Point the tomcat symlink at this version
+          ansible.builtin.file:
+            src: "{{ tomcat_home }}-{{ tomcat_version }}"
+            dest: "{{ tomcat_home }}"
+            state: link
+          notify: Restart tomcat
+
+        - name: Give the tomcat user its writable directories
+          ansible.builtin.file:
+            path: "{{ tomcat_home }}-{{ tomcat_version }}/{{ item }}"
+            state: directory
+            owner: "{{ tomcat_user }}"
+            group: "{{ tomcat_user }}"
+            recurse: true
+          loop: [logs, temp, work, webapps]
+
+        - name: Remove the default example webapps
+          ansible.builtin.file:
+            path: "{{ tomcat_home }}-{{ tomcat_version }}/webapps/{{ item }}"
+            state: absent
+          loop: [docs, examples, host-manager, manager]
+
+        - name: Set the HTTP port in server.xml
+          ansible.builtin.replace:
+            path: "{{ tomcat_home }}-{{ tomcat_version }}/conf/server.xml"
+            regexp: '(<Connector port=")\d+(" protocol="HTTP/1\.1")'
+            replace: '\g<1>{{ tomcat_port }}\g<2>'
+          notify: Restart tomcat
+
+        - name: Deploy systemd unit
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/tomcat.service
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Apache Tomcat {{ tomcat_version }}
+              After=network.target
+
+              [Service]
+              Type=forking
+              User={{ tomcat_user }}
+              Group={{ tomcat_user }}
+              Environment=JAVA_HOME=/usr/lib/jvm/java-{{ java_version }}-amazon-corretto
+              Environment=CATALINA_HOME={{ tomcat_home }}
+              Environment=CATALINA_BASE={{ tomcat_home }}
+              Environment=CATALINA_PID={{ tomcat_home }}/temp/tomcat.pid
+              Environment="CATALINA_OPTS=-Xms{{ tomcat_heap }} -Xmx{{ tomcat_heap }} -Djava.security.egd=file:/dev/./urandom"
+              ExecStart={{ tomcat_home }}/bin/startup.sh
+              ExecStop={{ tomcat_home }}/bin/shutdown.sh
+              PIDFile={{ tomcat_home }}/temp/tomcat.pid
+              Restart=on-failure
+              RestartSec=5
+              NoNewPrivileges=true
+              ProtectSystem=full
+
+              [Install]
+              WantedBy=multi-user.target
+          notify:
+            - Reload systemd
+            - Restart tomcat
+
+        - name: Flush handlers so Tomcat runs the new config
+          ansible.builtin.meta: flush_handlers
+
+        - name: Start and enable Tomcat
+          ansible.builtin.systemd_service:
+            name: tomcat
+            state: started
+            enabled: true
+            daemon_reload: true
+
+        - name: Deploy WAR
+          when: war_src | length > 0
+          block:
+            # Tomcat auto-deploys WARs, but a stale unpacked directory can linger on replace
+            - name: Copy WAR to webapps
+              ansible.builtin.copy:
+                src: "{{ war_src }}"
+                dest: "{{ tomcat_home }}/webapps/{{ war_name }}.war"
+                owner: "{{ tomcat_user }}"
+                group: "{{ tomcat_user }}"
+                mode: "0644"
+              notify: Remove unpacked WAR
+
+        - name: Flush handlers before the check
+          ansible.builtin.meta: flush_handlers
+
+        - name: Wait for Tomcat to answer
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ tomcat_port }}/"
+            status_code: [200, 404]
+          register: tomcat_up
+          retries: 15
+          delay: 3
+          until: tomcat_up.status is defined and tomcat_up.status in [200, 404]
+          changed_when: false
+
+        - name: Show versions
+          ansible.builtin.command:
+            argv: [sh, -c, "java -version 2>&1 | head -1; {{ tomcat_home }}/bin/version.sh | grep 'Server version'"]
+          environment:
+            JAVA_HOME: "/usr/lib/jvm/java-{{ java_version }}-amazon-corretto"
+          register: versions
+          changed_when: false
+
+        - name: Show summary
+          ansible.builtin.debug:
+            msg: "{{ versions.stdout_lines + ['Listening on port ' ~ tomcat_port] }}"
+
+    - name: Remove Tomcat
+      when: tomcat_state == 'absent'
+      block:
+        - name: Stop and disable Tomcat
+          ansible.builtin.systemd_service:
+            name: tomcat
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Find versioned Tomcat installs
+          ansible.builtin.find:
+            paths: "{{ tomcat_home | dirname }}"
+            patterns: "{{ tomcat_home | basename }}-*"
+            file_type: directory
+          register: tomcat_installs
+
+        - name: Remove unit, symlink and installs (the JDK is left in place)
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ ['/etc/systemd/system/tomcat.service', tomcat_home] + (tomcat_installs.files | map(attribute='path') | list) }}"
+          notify: Reload systemd
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Remove unpacked WAR
+      ansible.builtin.file:
+        path: "{{ tomcat_home }}/webapps/{{ war_name }}"
+        state: absent
+      notify: Restart tomcat
+
+    - name: Restart tomcat
+      ansible.builtin.systemd_service:
+        name: tomcat
+        state: restarted
