@@ -1,0 +1,113 @@
+---
+# Install PostgreSQL 15 on Amazon Linux 2023, initialise the cluster and optionally create an app database and user.
+# Listens on localhost only. The password comes from vars/vault.yml (vault_pg_password) or -e pg_password=...
+# Usage:
+#   ansible-playbook playbooks/medium/postgresql.yml
+#   ansible-playbook playbooks/medium/postgresql.yml --ask-vault-pass -e pg_db_name=shop -e pg_db_user=shop
+- name: PostgreSQL
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    pg_version: "15"
+    pg_db_name: ""                      # leave empty to skip creating an app database
+    pg_db_user: ""
+    pg_password: "{{ vault_pg_password | default('') }}"
+    pg_reset_password: false
+    pg_data_dir: /var/lib/pgsql/data
+  pre_tasks:
+    - name: Load vault secrets when an app database is requested
+      ansible.builtin.include_vars:
+        file: "{{ repo_root }}/vars/vault.yml"
+      when:
+        - pg_db_name | length > 0
+        - vault_pg_password is undefined
+        - (repo_root ~ '/vars/vault.yml') is file
+
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - pg_version is match('^[0-9]+$')
+        fail_msg: "Amazon Linux 2023 only"
+
+    - name: Validate app database settings
+      ansible.builtin.assert:
+        that:
+          - pg_db_name is match('^[a-z_][a-z0-9_]{0,62}$')
+          - pg_db_user is match('^[a-z_][a-z0-9_]{0,62}$')
+          - pg_password | length >= 12
+          - pg_password is not search("['\\\\]")
+        fail_msg: >-
+          Need lowercase pg_db_name and pg_db_user (letters, digits, _) and a password of at least 12 characters
+          without quotes or backslashes, set as vault_pg_password in vars/vault.yml or -e pg_password=...
+      when: pg_db_name | length > 0
+      no_log: true
+
+  tasks:
+    - name: Install PostgreSQL
+      ansible.builtin.dnf:
+        name:
+          - "postgresql{{ pg_version }}-server"
+          - "postgresql{{ pg_version }}"
+        state: present
+
+    - name: Initialise the database cluster
+      ansible.builtin.command:
+        cmd: postgresql-setup --initdb
+        creates: "{{ pg_data_dir }}/PG_VERSION"
+
+    - name: Start and enable PostgreSQL
+      ansible.builtin.systemd_service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Create app database and user
+      when: pg_db_name | length > 0
+      block:
+        - name: Check whether the app role exists
+          ansible.builtin.command:
+            argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_user }}'"]
+          register: pg_role
+          changed_when: false
+
+        - name: Check whether the app database exists
+          ansible.builtin.command:
+            argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT 1 FROM pg_database WHERE datname='{{ pg_db_name }}'"]
+          register: pg_db
+          changed_when: false
+
+        # Password goes over stdin so it never shows up in the process list
+        - name: Create app role or reset its password
+          ansible.builtin.command:
+            argv: [runuser, -u, postgres, --, psql, -v, ON_ERROR_STOP=1]
+            stdin: |
+              {% if pg_role.stdout | trim == '1' %}
+              ALTER ROLE {{ pg_db_user }} WITH LOGIN PASSWORD '{{ pg_password }}';
+              {% else %}
+              CREATE ROLE {{ pg_db_user }} WITH LOGIN PASSWORD '{{ pg_password }}';
+              {% endif %}
+          when: pg_role.stdout | trim != '1' or pg_reset_password | bool
+          changed_when: true
+          no_log: true
+
+        - name: Create app database
+          ansible.builtin.command:
+            argv: [runuser, -u, postgres, --, createdb, -O, "{{ pg_db_user }}", "{{ pg_db_name }}"]
+          when: pg_db.stdout | trim != '1'
+          changed_when: true
+
+  post_tasks:
+    - name: Check that PostgreSQL accepts connections
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, psql, -tAc, "SELECT version()"]
+      register: pg_ver
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ pg_ver.stdout }}"
+          - "App database: {{ (pg_db_name ~ ' (owner ' ~ pg_db_user ~ ')') if pg_db_name else 'not requested' }}"

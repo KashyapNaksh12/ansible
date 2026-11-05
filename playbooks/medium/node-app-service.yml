@@ -1,0 +1,155 @@
+---
+# Install Node.js on Amazon Linux 2023 and run a Node app from a public git repo as a systemd service.
+# Runs `npm ci --omit=dev` (as a handler) when the checkout changes. For private repos use deploy-app-from-git.yml.
+# Usage:
+#   ansible-playbook playbooks/medium/node-app-service.yml -e app_name=api -e repo_url=https://github.com/org/api.git
+#   ansible-playbook playbooks/medium/node-app-service.yml -e app_name=api -e repo_url=... -e app_port=4000 -e git_branch=release
+#   ansible-playbook playbooks/medium/node-app-service.yml -e app_name=api -e app_state=absent
+- name: Node.js app as a systemd service
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    app_name: ""
+    repo_url: ""
+    git_branch: main
+    app_state: present                  # present | absent
+    app_user: "{{ app_name }}"
+    app_dir: "/opt/{{ app_name }}"
+    app_port: 3000
+    node_version: "20"                  # package nodejs<version> on Amazon Linux 2023
+    app_entry: server.js
+    app_env: {}                         # environment variables for the service
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - app_name is match('^[a-z][a-z0-9_-]{1,30}$')
+          - app_state in ['present', 'absent']
+          - app_state == 'absent' or repo_url is match('^https://')
+          - node_version is match('^[0-9]+$')
+          - app_entry is match('^[A-Za-z0-9_./-]+$')
+          - app_port | int > 0
+        fail_msg: "Set app_name (lowercase), an https repo_url and a plain app_entry file name"
+
+    - name: Deploy the service
+      when: app_state == 'present'
+      block:
+        - name: Install Node.js, npm and git
+          ansible.builtin.dnf:
+            name: ["nodejs{{ node_version }}", "nodejs{{ node_version }}-npm", git]
+            state: present
+
+        - name: Create service user
+          ansible.builtin.user:
+            name: "{{ app_user }}"
+            system: true
+            shell: /sbin/nologin
+            home: "{{ app_dir }}"
+            create_home: false
+
+        - name: Create app directory
+          ansible.builtin.file:
+            path: "{{ app_dir }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0755"
+
+        - name: Check out the app
+          ansible.builtin.git:
+            repo: "{{ repo_url }}"
+            dest: "{{ app_dir }}"
+            version: "{{ git_branch }}"
+            force: false
+          become: true
+          become_user: "{{ app_user }}"
+          notify: Install npm dependencies
+
+        - name: Deploy systemd unit
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ app_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description={{ app_name }} (Node.js)
+              After=network.target
+
+              [Service]
+              User={{ app_user }}
+              Group={{ app_user }}
+              WorkingDirectory={{ app_dir }}
+              Environment=NODE_ENV=production
+              Environment=PORT={{ app_port }}
+              {% for key, value in app_env.items() %}
+              Environment="{{ key }}={{ value }}"
+              {% endfor %}
+              ExecStart=/usr/bin/node {{ app_dir }}/{{ app_entry }}
+              Restart=on-failure
+              RestartSec=5
+              NoNewPrivileges=true
+              ProtectSystem=full
+
+              [Install]
+              WantedBy=multi-user.target
+          notify:
+            - Reload systemd
+            - Restart app
+
+        - name: Flush handlers
+          ansible.builtin.meta: flush_handlers
+
+        - name: Start and enable the service
+          ansible.builtin.systemd_service:
+            name: "{{ app_name }}"
+            state: started
+            enabled: true
+
+        - name: Check the service stays up
+          ansible.builtin.command:
+            argv: [systemctl, is-active, "{{ app_name }}"]
+          register: svc
+          retries: 10
+          delay: 3
+          until: svc.stdout == 'active'
+          changed_when: false
+
+    - name: Remove the service
+      when: app_state == 'absent'
+      block:
+        - name: Stop and disable
+          ansible.builtin.systemd_service:
+            name: "{{ app_name }}"
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Remove unit and app directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: ["/etc/systemd/system/{{ app_name }}.service", "{{ app_dir }}"]
+          notify: Reload systemd
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Install npm dependencies
+      ansible.builtin.command:
+        cmd: npm ci --omit=dev
+        chdir: "{{ app_dir }}"
+      become: true
+      become_user: "{{ app_user }}"
+      environment:
+        HOME: "{{ app_dir }}"
+      changed_when: true
+      notify: Restart app
+
+    - name: Restart app
+      ansible.builtin.systemd_service:
+        name: "{{ app_name }}"
+        state: restarted

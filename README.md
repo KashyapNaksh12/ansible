@@ -56,6 +56,10 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `lamp-stack.yml` | Installs Apache, MariaDB and PHP (php-fpm) on Amazon Linux 2023, removes MariaDB test data, optionally creates an app DB and user from the vault | `... --ask-vault-pass -e lamp_db_name=shop -e lamp_db_user=shop` |
 | `java-stack.yml` | Installs Amazon Corretto 17/21 and Tomcat 10.1 (checksum-verified, systemd, versioned install with symlink), optionally deploys a WAR | `... -e java_version=21 -e war_src=./app.war -e war_name=app` |
 | `java-app-service.yml` | Runs a Spring Boot or any executable jar as a systemd service, keeps a rollback copy of the previous jar | `... -e app_name=myapp -e jar_src=./target/myapp.jar` |
+| `lemp-stack.yml` | Installs nginx, MariaDB and PHP (php-fpm over a unix socket) on Amazon Linux 2023, removes MariaDB test data | `... -e server_name=example.com` |
+| `postgresql.yml` | Installs PostgreSQL 15, initialises the cluster (localhost only), optionally creates an app DB and role from the vault | `... --ask-vault-pass -e pg_db_name=shop -e pg_db_user=shop` |
+| `node-app-service.yml` | Installs Node.js and runs an app from a public git repo as a systemd service, `npm ci` on change | `... -e app_name=api -e repo_url=https://github.com/org/api.git` |
+| `letsencrypt-nginx.yml` | Gets Let's Encrypt certificates for nginx sites (certbot in a venv), HTTPS redirect, twice-daily renewal timer | `... -e certbot_email=you@example.com -e '{"certbot_domains":["example.com"]}'` |
 
 ## Secrets (Ansible Vault)
 

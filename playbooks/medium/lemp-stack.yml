@@ -1,0 +1,182 @@
+---
+# Install a LEMP stack on Amazon Linux 2023: nginx, MariaDB 10.5 and PHP via php-fpm (unix socket).
+# php-fpm runs as the nginx user. Removes MariaDB's anonymous users and test database.
+# Pair with lamp-stack.yml's variables if you need an app database: this playbook only secures MariaDB.
+# Usage:
+#   ansible-playbook playbooks/medium/lemp-stack.yml
+#   ansible-playbook playbooks/medium/lemp-stack.yml -e server_name=example.com
+- name: LEMP stack
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    lemp_packages:
+      - nginx
+      - mariadb105-server
+      - php
+      - php-cli
+      - php-fpm
+      - php-mysqlnd
+      - php-mbstring
+      - php-xml
+      - php-gd
+      - php-opcache
+      - php-intl
+    server_name: "_"
+    lemp_doc_root: /usr/share/nginx/html
+    lemp_php_ini:
+      memory_limit: 256M
+      upload_max_filesize: 64M
+      post_max_size: 64M
+      date.timezone: "{{ timezone }}"
+      expose_php: "Off"
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - server_name is match('^[A-Za-z0-9._-]+$')
+        fail_msg: "Amazon Linux 2023 only, and server_name must be a plain host name"
+
+    - name: Install LEMP packages
+      ansible.builtin.dnf:
+        name: "{{ lemp_packages }}"
+        state: present
+
+    - name: Run php-fpm as the nginx user
+      ansible.builtin.lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: "^{{ item.key }}\\s*="
+        line: "{{ item.key }} = {{ item.value }}"
+      loop:
+        - { key: user, value: nginx }
+        - { key: group, value: nginx }
+        - { key: listen.owner, value: nginx }
+        - { key: listen.group, value: nginx }
+      loop_control:
+        label: "{{ item.key }}"
+      notify: Restart php-fpm
+
+    - name: Tune php.ini
+      community.general.ini_file:
+        path: /etc/php.ini
+        section: PHP
+        option: "{{ item.key }}"
+        value: "{{ item.value }}"
+        mode: "0644"
+      loop: "{{ lemp_php_ini | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} = {{ item.value }}"
+      notify: Restart php-fpm
+
+    - name: Deploy nginx server block with PHP support
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/lemp.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name {{ server_name }};
+              root {{ lemp_doc_root }};
+              index index.php index.html;
+              server_tokens off;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              location ~ \.php$ {
+                  include fastcgi_params;
+                  fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  fastcgi_pass unix:/run/php-fpm/www.sock;
+              }
+
+              location ~ /\.(?!well-known) {
+                  deny all;
+              }
+          }
+      notify: Reload nginx
+
+    - name: Deploy default index.php (kept if one already exists)
+      ansible.builtin.copy:
+        dest: "{{ lemp_doc_root }}/index.php"
+        owner: nginx
+        group: nginx
+        mode: "0644"
+        force: false
+        content: |
+          <?php $db = extension_loaded('mysqli') ? 'available' : 'missing'; ?>
+          <!doctype html>
+          <html>
+          <head><meta charset="utf-8"><title><?= htmlspecialchars(gethostname()) ?></title></head>
+          <body>
+            <h1>LEMP stack deployed by Ansible</h1>
+            <p>Host: <?= htmlspecialchars(gethostname()) ?></p>
+            <p>PHP <?= PHP_VERSION ?> with mysqli <?= $db ?></p>
+          </body>
+          </html>
+
+    - name: Validate nginx config
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Start and enable services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop: [mariadb, php-fpm, nginx]
+
+    # MariaDB root on localhost authenticates over the unix socket, so `mysql` as root needs no password.
+    - name: Check for anonymous users and the test database
+      ansible.builtin.command:
+        argv:
+          - mysql
+          - -N
+          - -B
+          - -e
+          - >-
+            SELECT (SELECT COUNT(*) FROM mysql.user WHERE User=''),
+            (SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='test')
+      register: db_insecure
+      changed_when: false
+
+    - name: Remove anonymous users and the test database
+      ansible.builtin.command:
+        argv: [mysql]
+        stdin: |
+          DELETE FROM mysql.global_priv WHERE User='';
+          DROP DATABASE IF EXISTS test;
+          DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';
+          FLUSH PRIVILEGES;
+      when: db_insecure.stdout.split() | map('int') | sum > 0
+      changed_when: true
+
+  post_tasks:
+    - name: Flush handlers before checking the site
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check that nginx serves PHP
+      ansible.builtin.uri:
+        url: http://127.0.0.1/index.php
+        return_content: true
+      register: site
+      retries: 5
+      delay: 2
+      until: site.status == 200
+      failed_when: site.status != 200 or '<?php' in site.content
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart php-fpm
+      ansible.builtin.systemd_service:
+        name: php-fpm
+        state: restarted

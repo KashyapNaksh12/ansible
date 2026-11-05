@@ -1,0 +1,119 @@
+---
+# Get free TLS certificates from Let's Encrypt for nginx sites on Amazon Linux 2023 and renew them automatically.
+# certbot is installed in a virtualenv (/opt/certbot) because AL2023 has no certbot package.
+# Requirements: DNS for every domain already points at the host, port 80 and 443 are open in the security group,
+# and nginx already has a server block for the domain (see nginx-site.yml or lemp-stack.yml).
+# Usage:
+#   ansible-playbook playbooks/medium/letsencrypt-nginx.yml -e certbot_email=you@example.com -e '{"certbot_domains":["example.com","www.example.com"]}'
+#   ansible-playbook playbooks/medium/letsencrypt-nginx.yml -e certbot_email=... -e '{"certbot_domains":["example.com"]}' -e certbot_staging=true
+- name: Let's Encrypt for nginx
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    certbot_email: ""
+    certbot_domains: []                 # the first domain names the certificate
+    certbot_staging: false              # true uses the staging CA (no rate limits, untrusted cert)
+    certbot_venv: /opt/certbot
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - certbot_email is match('^[^@\s]+@[^@\s]+\.[^@\s]+$')
+          - certbot_domains | length > 0
+          - certbot_domains | select('match', '^[A-Za-z0-9.-]+$') | list | length == certbot_domains | length
+        fail_msg: "Set certbot_email and certbot_domains (plain host names)"
+
+    - name: Install prerequisites
+      ansible.builtin.dnf:
+        name: [python3, python3-pip, augeas-libs, nginx]
+        state: present
+
+    - name: Install certbot with the nginx plugin
+      ansible.builtin.pip:
+        name: [certbot, certbot-nginx]
+        virtualenv: "{{ certbot_venv }}"
+        virtualenv_command: python3 -m venv
+
+    - name: Link certbot into PATH
+      ansible.builtin.file:
+        src: "{{ certbot_venv }}/bin/certbot"
+        dest: /usr/local/bin/certbot
+        state: link
+
+    - name: Make sure nginx is running
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Check for an existing certificate
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ certbot_domains[0] }}/fullchain.pem"
+      register: cert
+
+    - name: Request the certificate and enable the HTTPS redirect
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/bin/certbot', '--nginx', '--non-interactive', '--agree-tos',
+              '-m', certbot_email, '--redirect']
+              + (['--staging'] if certbot_staging | bool else [])
+              + (certbot_domains | map('regex_replace', '^', '-d ') | join(' ') | split(' ')) }}
+      when: not cert.stat.exists
+      changed_when: true
+
+    - name: Renewal service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/certbot-renew.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Renew Let's Encrypt certificates
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/certbot renew --quiet
+      notify: Reload systemd
+
+    - name: Renewal timer (twice a day, as Let's Encrypt recommends)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/certbot-renew.timer
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Twice-daily Let's Encrypt renewal
+
+          [Timer]
+          OnCalendar=*-*-* 03,15:00:00
+          RandomizedDelaySec=1h
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+      notify: Reload systemd
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable the renewal timer
+      ansible.builtin.systemd_service:
+        name: certbot-renew.timer
+        state: started
+        enabled: true
+
+    - name: Dry-run a renewal
+      ansible.builtin.command:
+        argv: [/usr/local/bin/certbot, renew, --dry-run, --quiet]
+      changed_when: false
+      when: not certbot_staging | bool
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
