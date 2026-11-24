@@ -5,3 +5,4 @@
 vault_git_username: "your-github-username"
 vault_git_token: "github_pat_xxxxxxxxxxxxxxxx"
 vault_lamp_db_password: "change-me-to-a-long-random-password"   # used by lamp-stack.yml
+vault_redis_password: "change-me-to-a-long-random-password"   # used by redis.yml
