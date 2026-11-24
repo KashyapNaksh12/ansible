@@ -1,0 +1,104 @@
+---
+# Install Redis 6 on Amazon Linux 2023, bind it to localhost (or chosen addresses) and optionally require a password.
+# The password comes from the vault (vault_redis_password) so it never sits in the playbook.
+# Usage:
+#   ansible-playbook playbooks/medium/redis.yml
+#   ansible-playbook playbooks/medium/redis.yml --ask-vault-pass -e redis_require_auth=true
+#   ansible-playbook playbooks/medium/redis.yml -e redis_maxmemory=256mb -e redis_maxmemory_policy=allkeys-lru
+- name: Redis server
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    redis_bind: "127.0.0.1 -::1"        # keep it local; widen only behind a security group
+    redis_port: 6379
+    redis_require_auth: false
+    redis_maxmemory: ""                 # e.g. 256mb, empty = no limit
+    redis_maxmemory_policy: noeviction
+    redis_appendonly: true              # persist writes to disk
+    redis_conf: /etc/redis6/redis6.conf
+  pre_tasks:
+    - name: Load vault secrets when auth is requested
+      ansible.builtin.include_vars:
+        file: "{{ repo_root }}/vars/vault.yml"
+      when:
+        - redis_require_auth
+        - vault_redis_password is undefined
+        - (repo_root ~ '/vars/vault.yml') is file
+
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - redis_port | int > 0
+          - redis_maxmemory_policy in ['noeviction', 'allkeys-lru', 'volatile-lru', 'allkeys-lfu', 'volatile-lfu', 'allkeys-random', 'volatile-ttl']
+          - not redis_require_auth or (vault_redis_password | default('') | length >= 16)
+        fail_msg: "Unsupported OS or settings; auth needs vault_redis_password of 16+ characters"
+      no_log: true
+
+  tasks:
+    - name: Install Redis
+      ansible.builtin.dnf:
+        name: redis6
+        state: present
+
+    - name: Apply Redis settings
+      ansible.builtin.lineinfile:
+        path: "{{ redis_conf }}"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        validate: "true"
+      loop:
+        - { regexp: "^bind ", line: "bind {{ redis_bind }}" }
+        - { regexp: "^port ", line: "port {{ redis_port }}" }
+        - { regexp: "^appendonly ", line: "appendonly {{ 'yes' if redis_appendonly else 'no' }}" }
+        - { regexp: "^maxmemory-policy ", line: "maxmemory-policy {{ redis_maxmemory_policy }}" }
+      loop_control:
+        label: "{{ item.line }}"
+      notify: Restart redis
+
+    - name: Set memory limit
+      ansible.builtin.lineinfile:
+        path: "{{ redis_conf }}"
+        regexp: "^maxmemory "
+        line: "maxmemory {{ redis_maxmemory }}"
+      when: redis_maxmemory | length > 0
+      notify: Restart redis
+
+    - name: Set password
+      ansible.builtin.lineinfile:
+        path: "{{ redis_conf }}"
+        regexp: "^requirepass "
+        line: "requirepass {{ vault_redis_password }}"
+      when: redis_require_auth
+      no_log: true
+      notify: Restart redis
+
+    - name: Start and enable Redis
+      ansible.builtin.systemd_service:
+        name: redis6
+        state: started
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ping Redis
+      ansible.builtin.command: redis6-cli -p {{ redis_port }} ping
+      environment:
+        REDISCLI_AUTH: "{{ vault_redis_password if redis_require_auth else '' }}"
+      register: redis_ping
+      changed_when: false
+      failed_when: "'PONG' not in redis_ping.stdout"
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Redis answers PONG on port {{ redis_port }} (bind: {{ redis_bind }}, auth: {{ redis_require_auth }})"
+
+  handlers:
+    - name: Restart redis
+      ansible.builtin.systemd_service:
+        name: redis6
+        state: restarted
