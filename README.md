@@ -65,6 +65,7 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `grow-disk.yml` | Grows the partition and xfs/ext4 filesystem after an EBS resize, no reboot | `... -e grow_mount=/ -e grow_disk=/dev/nvme0n1` |
 | `cert-expiry.yml` | Read-only TLS certificate expiry report, fails hosts inside the warning window, writes `reports/certs-*.txt` | `... -e warn_days=30` |
 | `memcached.yml` | Installs memcached on Amazon Linux 2023, localhost only by default, configurable memory and port | `... -e memcached_memory_mb=512` |
+| `ssm-agent.yml` | Ensures the AWS Systems Manager agent is installed, running and enabled | |
 
 ## Secrets (Ansible Vault)
 
