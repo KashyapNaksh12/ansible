@@ -1,0 +1,28 @@
+---
+# Make sure the AWS Systems Manager agent is installed, running and enabled (Session Manager, Patch Manager).
+# The instance still needs an IAM role with AmazonSSMManagedInstanceCore to show up in SSM.
+# Usage: ansible-playbook playbooks/medium/ssm-agent.yml
+- name: SSM agent
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Install the agent
+      ansible.builtin.package:
+        name: amazon-ssm-agent
+        state: present
+
+    - name: Start and enable the agent
+      ansible.builtin.systemd_service:
+        name: amazon-ssm-agent
+        state: started
+        enabled: true
+
+    - name: Gather service state
+      ansible.builtin.service_facts:
+
+    - name: Check the agent is running
+      ansible.builtin.assert:
+        that: ansible_facts['services']['amazon-ssm-agent.service']['state'] == 'running'
+        fail_msg: "amazon-ssm-agent is not running on {{ inventory_hostname }}"
+        success_msg: "amazon-ssm-agent is running on {{ inventory_hostname }}"
