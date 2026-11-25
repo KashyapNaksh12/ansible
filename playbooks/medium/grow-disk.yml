@@ -1,0 +1,71 @@
+---
+# Grow a partition and its filesystem after an EBS volume was enlarged in AWS (no reboot needed).
+# Supports xfs (default on Amazon Linux 2023) and ext4. Safe to re-run: nothing changes if there is no free space.
+# Usage:
+#   ansible-playbook playbooks/medium/grow-disk.yml
+#   ansible-playbook playbooks/medium/grow-disk.yml -e grow_mount=/data -e grow_disk=/dev/nvme1n1 -e grow_part=1
+- name: Grow disk and filesystem
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    grow_mount: /
+    grow_disk: /dev/nvme0n1             # whole disk
+    grow_part: "1"                      # partition number on that disk (use "" if the filesystem has no partition table)
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - grow_mount is match('^/[A-Za-z0-9_/.-]*$')
+          - grow_disk is match('^/dev/[A-Za-z0-9]+$')
+          - grow_part is match('^[0-9]*$')
+        fail_msg: "grow_mount, grow_disk and grow_part look wrong"
+
+    - name: Find the filesystem type and device
+      ansible.builtin.command: findmnt -no FSTYPE,SOURCE {{ grow_mount | quote }}
+      register: mount_info
+      changed_when: false
+
+    - name: Set filesystem facts
+      ansible.builtin.set_fact:
+        fs_type: "{{ mount_info.stdout.split()[0] }}"
+        fs_device: "{{ mount_info.stdout.split()[1] }}"
+
+    - name: Stop on unsupported filesystems
+      ansible.builtin.assert:
+        that: fs_type in ['xfs', 'ext4']
+        fail_msg: "{{ grow_mount }} is {{ fs_type }}; only xfs and ext4 are supported"
+
+    - name: Install growpart
+      ansible.builtin.package:
+        name: cloud-utils-growpart
+        state: present
+      when: grow_part | length > 0
+
+    - name: Grow the partition
+      ansible.builtin.command: growpart {{ grow_disk | quote }} {{ grow_part | quote }}
+      register: growpart_result
+      changed_when: growpart_result.rc == 0
+      failed_when: growpart_result.rc not in [0, 1]    # rc 1 means "NOCHANGE"
+      when: grow_part | length > 0
+
+    - name: Grow xfs
+      ansible.builtin.command: xfs_growfs {{ grow_mount | quote }}
+      register: xfs_result
+      changed_when: "'data blocks changed' in xfs_result.stdout"
+      when: fs_type == 'xfs'
+
+    - name: Grow ext4
+      ansible.builtin.command: resize2fs {{ fs_device | quote }}
+      register: ext4_result
+      changed_when: "'Nothing to do' not in ext4_result.stderr and 'Nothing to do' not in ext4_result.stdout"
+      when: fs_type == 'ext4'
+
+    - name: Show disk usage
+      ansible.builtin.command: df -h {{ grow_mount | quote }}
+      register: df_result
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        var: df_result.stdout_lines
