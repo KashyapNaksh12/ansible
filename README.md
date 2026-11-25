@@ -69,13 +69,20 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 
 ```bash
 cp vars/vault.yml.example vars/vault.yml
-vim vars/vault.yml                 # add your git username/token
+vim vars/vault.yml                 # fill in only the keys you need (table below)
 ansible-vault encrypt vars/vault.yml
 ansible-playbook playbooks/medium/deploy-app-from-git.yml --ask-vault-pass \
   -e repo_url=github.com/org/repo -e git_branch=main
 ```
 
 Never put tokens or passwords in playbooks as plain text.
+
+| Vault key | Used by |
+|---|---|
+| `vault_git_username`, `vault_git_token` | `deploy-app-from-git.yml` |
+| `vault_lamp_db_password` | `lamp-stack.yml` |
+| `vault_pg_password` | `postgresql.yml` |
+| `vault_redis_password` | `redis.yml` (when `redis_require_auth=true`) |
 
 ## Handy flags
 
