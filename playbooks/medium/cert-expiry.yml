@@ -1,0 +1,68 @@
+---
+# Read-only report of TLS certificate expiry. Checks local certificate files (default: Let's Encrypt) and
+# fails a host when a certificate expires within the warning window. Writes reports/certs-<date>.txt.
+# Usage:
+#   ansible-playbook playbooks/medium/cert-expiry.yml
+#   ansible-playbook playbooks/medium/cert-expiry.yml -e warn_days=30 -e '{"cert_globs":["/etc/ssl/app/*.pem"]}'
+- name: TLS certificate expiry
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    cert_globs: ["/etc/letsencrypt/live/*/fullchain.pem"]
+    warn_days: 21
+  tasks:
+    - name: Find certificate files
+      ansible.builtin.find:
+        paths: "{{ item | dirname | dirname if '*' in (item | dirname) else item | dirname }}"
+        patterns: "{{ item | basename }}"
+        recurse: true
+        follow: true
+      loop: "{{ cert_globs }}"
+      register: found
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build list of certificate paths
+      ansible.builtin.set_fact:
+        cert_files: "{{ found.results | map(attribute='files') | flatten | map(attribute='path') | unique | sort }}"
+
+    - name: Read certificate expiry
+      ansible.builtin.command: openssl x509 -noout -enddate -in {{ item | quote }}
+      loop: "{{ cert_files }}"
+      register: enddates
+      changed_when: false
+
+    - name: Check each certificate against the warning window
+      ansible.builtin.command: openssl x509 -noout -checkend {{ (warn_days | int) * 86400 }} -in {{ item | quote }}
+      loop: "{{ cert_files }}"
+      register: checks
+      changed_when: false
+      failed_when: false
+
+    - name: Build report lines
+      ansible.builtin.set_fact:
+        cert_report: >-
+          {{ cert_report | default([]) + [
+            (item.0.item ~ ' -> ' ~ (item.0.stdout | regex_replace('^notAfter=', '')) ~ (' EXPIRING' if item.1.rc != 0 else ' ok'))
+          ] }}
+      loop: "{{ enddates.results | zip(checks.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item }}"
+
+    - name: Show report
+      ansible.builtin.debug:
+        msg: "{{ cert_report | default(['no certificates found']) }}"
+
+    - name: Save report on the control node
+      ansible.builtin.copy:
+        content: "{{ inventory_hostname }}\n{{ cert_report | default(['no certificates found']) | join('\n') }}\n"
+        dest: "{{ local_report_dir }}/certs-{{ inventory_hostname }}-{{ lookup('pipe', 'date +%F') }}.txt"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Fail when a certificate is expiring
+      ansible.builtin.assert:
+        that: checks.results | selectattr('rc', 'ne', 0) | list | length == 0
+        fail_msg: "Certificate expires within {{ warn_days }} days; see report above"
