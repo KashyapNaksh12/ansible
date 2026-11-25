@@ -1,0 +1,64 @@
+---
+# Install memcached on Amazon Linux 2023, listening on localhost only by default.
+# Usage:
+#   ansible-playbook playbooks/medium/memcached.yml
+#   ansible-playbook playbooks/medium/memcached.yml -e memcached_memory_mb=512 -e memcached_listen=0.0.0.0
+- name: Memcached
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    memcached_port: 11211
+    memcached_listen: 127.0.0.1         # widen only behind a security group; memcached has no auth
+    memcached_memory_mb: 128
+    memcached_max_conn: 1024
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Amazon'
+          - ansible_facts['distribution_major_version'] == '2023'
+          - memcached_port | int > 0
+          - memcached_memory_mb | int > 0
+          - memcached_listen is match('^[0-9.]+$')
+        fail_msg: "Unsupported OS or settings"
+
+    - name: Install memcached
+      ansible.builtin.dnf:
+        name: memcached
+        state: present
+
+    - name: Write memcached options
+      ansible.builtin.copy:
+        dest: /etc/sysconfig/memcached
+        content: |
+          PORT="{{ memcached_port }}"
+          USER="memcached"
+          MAXCONN="{{ memcached_max_conn }}"
+          CACHESIZE="{{ memcached_memory_mb }}"
+          OPTIONS="-l {{ memcached_listen }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart memcached
+
+    - name: Start and enable memcached
+      ansible.builtin.systemd_service:
+        name: memcached
+        state: started
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the port
+      ansible.builtin.wait_for:
+        host: "{{ memcached_listen }}"
+        port: "{{ memcached_port | int }}"
+        timeout: 15
+
+  handlers:
+    - name: Restart memcached
+      ansible.builtin.systemd_service:
+        name: memcached
+        state: restarted
