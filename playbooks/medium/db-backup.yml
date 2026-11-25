@@ -1,0 +1,81 @@
+---
+# Dump a database on each host, compress it, rotate old dumps and optionally fetch the newest one to the control node.
+# Works as root over the local socket: mariadb uses mysqldump, postgresql uses pg_dump as the postgres user.
+# Usage:
+#   ansible-playbook playbooks/medium/db-backup.yml -e db_engine=mariadb -e db_name=shop
+#   ansible-playbook playbooks/medium/db-backup.yml -e db_engine=postgresql -e db_name=shop -e fetch_to_local=true
+- name: Database backup
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    db_engine: ""                       # mariadb or postgresql
+    db_name: ""
+    db_backup_dir: /var/backups/db
+    retention_count: 7
+    fetch_to_local: false
+  tasks:
+    - name: Validate input
+      ansible.builtin.assert:
+        that:
+          - db_engine in ['mariadb', 'postgresql']
+          - db_name is match('^[A-Za-z0-9_]+$')
+        fail_msg: "Set db_engine (mariadb or postgresql) and db_name (letters, digits, _)"
+
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ db_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Set dump file name
+      ansible.builtin.set_fact:
+        dump_file: "{{ db_backup_dir }}/{{ inventory_hostname }}-{{ db_name }}-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.sql.gz"
+
+    - name: Dump MariaDB database
+      ansible.builtin.shell: set -o pipefail && mysqldump --single-transaction --routines --triggers {{ db_name | quote }} | gzip > {{ dump_file | quote }}
+      args:
+        executable: /bin/bash
+        creates: "{{ dump_file }}"
+      when: db_engine == 'mariadb'
+      changed_when: true
+
+    - name: Dump PostgreSQL database
+      ansible.builtin.shell: set -o pipefail && sudo -u postgres pg_dump {{ db_name | quote }} | gzip > {{ dump_file | quote }}
+      args:
+        executable: /bin/bash
+        creates: "{{ dump_file }}"
+      when: db_engine == 'postgresql'
+      changed_when: true
+
+    - name: Restrict dump permissions
+      ansible.builtin.file:
+        path: "{{ dump_file }}"
+        mode: "0600"
+
+    - name: Check the dump is a valid gzip file
+      ansible.builtin.command: gzip -t {{ dump_file | quote }}
+      changed_when: false
+
+    - name: Fetch dump to control node
+      ansible.builtin.fetch:
+        src: "{{ dump_file }}"
+        dest: "{{ local_backup_dir }}/{{ inventory_hostname }}/"
+        flat: true
+      when: fetch_to_local | bool
+
+    - name: Find existing dumps
+      ansible.builtin.find:
+        paths: "{{ db_backup_dir }}"
+        patterns: "{{ inventory_hostname }}-{{ db_name }}-*.sql.gz"
+      register: old_dumps
+
+    - name: Remove dumps beyond the retention count
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ (old_dumps.files | sort(attribute='mtime', reverse=true))[retention_count | int :] }}"
+      loop_control:
+        label: "{{ item.path }}"
