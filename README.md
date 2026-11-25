@@ -63,6 +63,7 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `redis.yml` | Installs Redis 6 on Amazon Linux 2023, localhost only, AOF persistence, optional memory limit and vault password | `... --ask-vault-pass -e redis_require_auth=true` |
 | `db-backup.yml` | Dumps a MariaDB or PostgreSQL database to a gzip file, verifies it, rotates old dumps, optional fetch to `backups/` | `... -e db_engine=postgresql -e db_name=shop` |
 | `grow-disk.yml` | Grows the partition and xfs/ext4 filesystem after an EBS resize, no reboot | `... -e grow_mount=/ -e grow_disk=/dev/nvme0n1` |
+| `cert-expiry.yml` | Read-only TLS certificate expiry report, fails hosts inside the warning window, writes `reports/certs-*.txt` | `... -e warn_days=30` |
 
 ## Secrets (Ansible Vault)
 
