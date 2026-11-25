@@ -61,6 +61,7 @@ Run everything from the repo root so `ansible.cfg` gets picked up.
 | `node-app-service.yml` | Installs Node.js and runs an app from a public git repo as a systemd service, `npm ci` on change | `... -e app_name=api -e repo_url=https://github.com/org/api.git` |
 | `letsencrypt-nginx.yml` | Gets Let's Encrypt certificates for nginx sites (certbot in a venv), HTTPS redirect, twice-daily renewal timer | `... -e certbot_email=you@example.com -e '{"certbot_domains":["example.com"]}'` |
 | `redis.yml` | Installs Redis 6 on Amazon Linux 2023, localhost only, AOF persistence, optional memory limit and vault password | `... --ask-vault-pass -e redis_require_auth=true` |
+| `db-backup.yml` | Dumps a MariaDB or PostgreSQL database to a gzip file, verifies it, rotates old dumps, optional fetch to `backups/` | `... -e db_engine=postgresql -e db_name=shop` |
 
 ## Secrets (Ansible Vault)
 
