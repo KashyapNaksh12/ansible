@@ -1,6 +1,6 @@
 # Ansible – Daily DevOps Playbooks
 
-Playbooks for routine work on Amazon Linux (2 / 2023) EC2 servers.
+Ready-to-run Ansible playbooks for daily DevOps on Amazon Linux (2 / 2023) EC2 servers: patching, hardening, LAMP/LEMP/Java/Node stacks, databases, backups, monitoring and TLS. Every playbook is linted in CI and written to be safe to re-run.
 
 ## Layout
 
